@@ -444,7 +444,9 @@ class TestAvailableTranslationEngines:
             {"model_name": "ai4bharat/indictrans3"},
             {"model_name": "bodhan-ai/indic-translate"}
         ]
-        mock_client.get.return_value = mock_response
+        mock_404 = Mock()
+        mock_404.status_code = 404
+        mock_client.get.side_effect = [mock_response, mock_404]
 
         from flask import Flask
         app = Flask("test_app")
@@ -459,12 +461,46 @@ class TestAvailableTranslationEngines:
             assert engines[1]["value"] == "indic_translate"
             assert engines[1]["label"] == "Indic-Translate"
 
-            mock_client.get.assert_called_once()
-            call_kwargs = mock_client.get.call_args[1]
+            call_kwargs = mock_client.get.call_args_list[0][1]
             assert call_kwargs["headers"] == {
                 "Authorization": "Bearer test-api-key",
                 "X-API-Key": "test-api-key",
             }
+
+    @patch('httpx.Client')
+    def test_get_available_translation_engines_filters_litellm_live(self, mock_client_class):
+        """Filter /v1/models by LiteLLM /model/info + /health so down models are excluded."""
+        mock_client = Mock()
+        mock_client_class.return_value.__enter__.return_value = mock_client
+
+        models_resp = Mock(status_code=200)
+        models_resp.json.return_value = {
+            "data": [
+                {"id": "bharatgen-param"},
+                {"id": "gemma-4"},
+                {"id": "indic-translate"},
+            ]
+        }
+        info_resp = Mock(status_code=200)
+        info_resp.json.return_value = {
+            "data": [
+                {"model_name": "gemma-4", "model_info": {"id": "id-gemma"}},
+                {"model_name": "bharatgen-param", "model_info": {"id": "id-param"}},
+            ]
+        }
+        health_resp = Mock(status_code=200)
+        health_resp.json.return_value = {
+            "healthy_endpoints": [{"model_id": "id-gemma"}]
+        }
+        mock_client.get.side_effect = [models_resp, info_resp, health_resp]
+
+        from flask import Flask
+        app = Flask("test_app")
+        app.config["TRANSLATION_SERVICE_URL"] = "http://10.195.100.51:4000/v1"
+
+        with app.app_context():
+            engines = get_available_translation_engines()
+            assert [e["value"] for e in engines] == ["llm_gemma"]
 
     @patch('httpx.Client')
     def test_get_available_translation_engines_when_down(self, mock_client_class):

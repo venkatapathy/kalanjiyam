@@ -182,6 +182,67 @@ def _get_ocr_service_targets() -> list[tuple[str, str]]:
     return targets
 
 
+_LITELLM_LIVE_CACHE: dict[str, tuple[float, set[str] | None]] = {}
+_LITELLM_CACHE_TTL = 60.0
+
+
+def _get_litellm_live_models(
+    client: httpx.Client, root_base: str, headers: dict
+) -> set[str] | None:
+    """Return live model names from LiteLLM /model/info + /health, or None if not LiteLLM."""
+    import os
+    import time
+
+    use_cache = not os.environ.get("PYTEST_CURRENT_TEST")
+    now = time.monotonic()
+    if use_cache and root_base in _LITELLM_LIVE_CACHE:
+        ts, cached = _LITELLM_LIVE_CACHE[root_base]
+        if now - ts < _LITELLM_CACHE_TTL:
+            return cached
+
+    live_names: set[str] | None = None
+    try:
+        info_resp = client.get(f"{root_base}/model/info", headers=headers)
+        if info_resp.status_code == 200:
+            info_data = info_resp.json().get("data", [])
+            if isinstance(info_data, list):
+                id_to_name = {}
+                all_names = set()
+                for entry in info_data:
+                    if not isinstance(entry, dict):
+                        continue
+                    mname = entry.get("model_name")
+                    if mname:
+                        all_names.add(mname)
+                    mid = (entry.get("model_info") or {}).get("id")
+                    if mid and mname:
+                        id_to_name[mid] = mname
+                live_names = all_names
+
+                try:
+                    health_resp = client.get(f"{root_base}/health", headers=headers)
+                    if health_resp.status_code == 200:
+                        health_json = health_resp.json()
+                        healthy = health_json.get("healthy_endpoints")
+                        if isinstance(healthy, list):
+                            healthy_names = set()
+                            for ep in healthy:
+                                if not isinstance(ep, dict):
+                                    continue
+                                resolved = id_to_name.get(ep.get("model_id"))
+                                if resolved:
+                                    healthy_names.add(resolved)
+                            live_names = healthy_names
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if use_cache:
+        _LITELLM_LIVE_CACHE[root_base] = (now, live_names)
+    return live_names
+
+
 def get_available_engines() -> dict:
     """Ping the OCR service and return which engines are ready.
 
@@ -216,6 +277,9 @@ def get_available_engines() -> dict:
                     if models_resp.status_code == 200:
                         data = models_resp.json().get("data", [])
                         raw_ids = [m.get("id", "") for m in data if isinstance(m, dict)]
+                        live_names = _get_litellm_live_models(client, clean_base, headers)
+                        if live_names is not None:
+                            raw_ids = [mid for mid in raw_ids if mid in live_names]
                         engines = []
                         for mid in raw_ids:
                             norm = normalize_service_engine(mid)
@@ -604,7 +668,7 @@ def _run_ocr_chat_completions(
 
     norm = normalize_service_engine(engine_name)
     if norm == "chandra":
-        model_id = "chandra"
+        model_id = "chandra-ocr"
     elif norm == "gemma_ocr":
         model_id = "gemma-4"
     elif norm == "dots_ocr":
@@ -620,7 +684,7 @@ def _run_ocr_chat_completions(
             "\"bbox\" ([ymin, xmin, ymax, xmax] in 0-1000 normalized scale), and \"text\" (leave empty for figures/images). "
             "Output ONLY valid JSON without any markdown formatting or commentary."
         )
-    elif model_id == "chandra":
+    elif model_id in ("chandra", "chandra-ocr"):
         ocr_prompt = (
             "OCR this image to HTML, arranged as layout blocks. "
             "Each layout block should be an element with a data-bbox attribute representing the bounding box of the block "

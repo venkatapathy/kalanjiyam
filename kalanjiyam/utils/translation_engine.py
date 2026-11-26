@@ -1536,9 +1536,19 @@ def get_available_translation_engines() -> List[Dict[str, str]]:
             timeout = 5.0
             with httpx.Client(timeout=timeout, trust_env=False) as client:
                 response = client.get(url, headers=headers)
-            if response.status_code == 200:
-                resp_json = response.json()
-                models = resp_json.get("data", []) if isinstance(resp_json, dict) else resp_json
+                if response.status_code == 200:
+                    resp_json = response.json()
+                    models = resp_json.get("data", []) if isinstance(resp_json, dict) else resp_json
+                    from kalanjiyam.utils.ocr_client import _get_litellm_live_models
+                    root_base = base_url.rstrip("/")
+                    if root_base.endswith("/v1"):
+                        root_base = root_base[:-3]
+                    live_names = _get_litellm_live_models(client, root_base, headers)
+                    if live_names is not None:
+                        models = [
+                            m for m in models
+                            if (m.get("model_name", "") or m.get("id", "")) in live_names
+                        ]
                 for m in models:
                     # Use backend provided engine/label or derive intelligently
                     engine_val = m.get("engine")
@@ -1599,6 +1609,8 @@ def get_available_translation_engines() -> List[Dict[str, str]]:
                             'translation_1b_exp_40': 'Translation 1B Exp 40',
                         }
                         label_val = label_map.get(engine_val, engine_val.replace('_', ' ').replace('-', ' ').title())
+
+                    engine_val = normalize_translation_service_engine(engine_val)
 
                     if (
                         engine_val in SUPPORTED_TRANSLATION_ENGINES

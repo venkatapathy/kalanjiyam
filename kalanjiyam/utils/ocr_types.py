@@ -127,6 +127,8 @@ SERVICE_ENGINE_ALIASES = {
     "bodhan": "indic_ocr",
     "sanskrit-manuscript": "tesseract_manuscript",
     "sanskrit_manuscript": "tesseract_manuscript",
+    "chandra-ocr": "chandra",
+    "chandra_ocr": "chandra",
 }
 
 ENGINE_MAP = {
